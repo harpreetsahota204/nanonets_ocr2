@@ -10,7 +10,9 @@ import numpy as np
 import torch
 
 import fiftyone as fo
-from fiftyone import Model, SamplesMixin
+from fiftyone import Model
+from fiftyone.core.models import SupportsGetItem
+from fiftyone.utils.torch import GetItem
 
 from transformers import AutoTokenizer, AutoProcessor, AutoModelForImageTextToText
 from transformers.utils import is_flash_attn_2_available
@@ -52,10 +54,33 @@ def get_device():
     return "cpu"
 
 
-class NanoNetsOCR(Model, SamplesMixin):
-    """FiftyOne model for NanoNets-OCR vision-language tasks.
+class NanoNetsOCRGetItem(GetItem):
+    """GetItem transform for batching NanoNets-OCR inference."""
+    
+    @property
+    def required_keys(self):
+        """Fields required from each sample."""
+        return ["filepath"]
+    
+    def __call__(self, sample_dict):
+        """Load and return PIL Image from filepath.
+        
+        Args:
+            sample_dict: Dictionary containing sample fields
+            
+        Returns:
+            PIL.Image: Loaded image in RGB format
+        """
+        filepath = sample_dict["filepath"]
+        image = Image.open(filepath).convert("RGB")
+        return image
+
+
+class NanoNetsOCR(Model, SupportsGetItem):
+    """FiftyOne model for NanoNets-OCR vision-language tasks with batching support.
     
     Simple OCR model that extracts text from documents using vision-language processing.
+    Supports efficient batch processing for faster inference on large datasets.
     
     Automatically selects optimal dtype based on hardware:
     - bfloat16 for CUDA devices with compute capability 8.0+ (Ampere and newer)
@@ -77,10 +102,11 @@ class NanoNetsOCR(Model, SamplesMixin):
         torch_dtype: torch.dtype = None,
         **kwargs
     ):
-        SamplesMixin.__init__(self) 
+        SupportsGetItem.__init__(self) 
         self.model_path = model_path
         self._custom_prompt = custom_prompt
         self.max_new_tokens = max_new_tokens
+        self._preprocess = False  # Preprocessing happens in GetItem
         
         # Device setup
         self.device = get_device()
@@ -121,6 +147,128 @@ class NanoNetsOCR(Model, SamplesMixin):
     def media_type(self):
         """The media type processed by this model."""
         return "image"
+    
+    @property
+    def preprocess(self):
+        """Whether preprocessing should be applied."""
+        return self._preprocess
+    
+    @preprocess.setter
+    def preprocess(self, value):
+        """Set preprocessing flag."""
+        self._preprocess = value
+    
+    @property
+    def has_collate_fn(self):
+        """Whether this model provides a custom collate function."""
+        return False  # Use default collation
+    
+    @property
+    def collate_fn(self):
+        """Custom collate function for the DataLoader."""
+        return None  # Not used
+    
+    @property
+    def ragged_batches(self):
+        """Whether this model supports batches with varying sizes."""
+        return True  # PIL Images can have different dimensions
+    
+    def get_item(self):
+        """Return the GetItem transform for batching support."""
+        return NanoNetsOCRGetItem()
+    
+    def build_get_item(self, field_mapping=None):
+        """Build the GetItem transform for batching.
+        
+        Args:
+            field_mapping: Optional field mapping configuration
+            
+        Returns:
+            NanoNetsOCRGetItem: GetItem transform instance
+        """
+        return NanoNetsOCRGetItem(field_mapping=field_mapping)
+    
+    def predict_all(self, images, preprocess=None):
+        """Batch prediction for multiple images.
+        
+        Args:
+            images: List of PIL Images to process
+            preprocess: Whether to preprocess (convert numpy to PIL)
+            
+        Returns:
+            List[str]: List of extracted text from documents
+        """
+        # Use instance preprocess flag if not specified
+        if preprocess is None:
+            preprocess = self._preprocess
+        
+        # Preprocess if needed (convert numpy to PIL)
+        if preprocess:
+            pil_images = []
+            for img in images:
+                if isinstance(img, np.ndarray):
+                    img = Image.fromarray(img)
+                pil_images.append(img)
+            images = pil_images
+        
+        # Use custom prompt if provided, otherwise use default
+        prompt = self._custom_prompt if self._custom_prompt else DEFAULT_PROMPT
+        
+        # Prepare batch of messages (one per image)
+        all_messages = []
+        for image in images:
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": [
+                    {"type": "image", "image": image},  # PIL Image directly
+                    {"type": "text", "text": prompt},
+                ]},
+            ]
+            all_messages.append(messages)
+        
+        # Run batch inference with suppressed output
+        with suppress_output():
+            # Apply chat template to all messages
+            texts = [
+                self.processor.apply_chat_template(
+                    msg, 
+                    tokenize=False, 
+                    add_generation_prompt=True
+                ) 
+                for msg in all_messages
+            ]
+            
+            # Process batch of inputs
+            inputs = self.processor(
+                text=texts,        # List of texts
+                images=images,     # List of PIL Images
+                padding=True,      # Key for batching!
+                return_tensors="pt"
+            )
+            inputs = inputs.to(self.model.device)
+            
+            # Batch generation
+            output_ids = self.model.generate(
+                **inputs, 
+                max_new_tokens=self.max_new_tokens, 
+                do_sample=False
+            )
+            
+            # Decode only the generated tokens (excluding input)
+            batch_size = len(images)
+            generated_ids = [
+                output_ids[i][len(inputs.input_ids[i]):] 
+                for i in range(batch_size)
+            ]
+            
+            # Batch decode to text
+            results = self.processor.batch_decode(
+                generated_ids, 
+                skip_special_tokens=True, 
+                clean_up_tokenization_spaces=True
+            )
+        
+        return results
     
     def _predict(self, image: Image.Image, sample) -> str:
         """Process image through NanoNets-OCR.
