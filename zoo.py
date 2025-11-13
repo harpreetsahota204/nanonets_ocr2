@@ -76,7 +76,7 @@ class NanoNetsOCRGetItem(GetItem):
         return image
 
 
-class NanoNetsOCR(Model, SupportsGetItem):
+class NanoNetsOCR(SupportsGetItem, Model):
     """FiftyOne model for NanoNets-OCR vision-language tasks with batching support.
     
     Simple OCR model that extracts text from documents using vision-language processing.
