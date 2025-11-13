@@ -91,6 +91,7 @@ class NanoNetsOCR(Model, SupportsGetItem):
         model_path: HuggingFace model ID or local path (default: "nanonets/Nanonets-OCR2-3B")
         custom_prompt: Custom prompt for OCR task (optional)
         max_new_tokens: Maximum tokens to generate (default: 15000)
+        batch_size: Default batch size for inference (default: 4)
         torch_dtype: Override automatic dtype selection
     """
     
@@ -99,6 +100,7 @@ class NanoNetsOCR(Model, SupportsGetItem):
         model_path: str = "nanonets/Nanonets-OCR2-3B",
         custom_prompt: str = None,
         max_new_tokens: int = 15000,
+        batch_size: int = 4,
         torch_dtype: torch.dtype = None,
         **kwargs
     ):
@@ -106,6 +108,7 @@ class NanoNetsOCR(Model, SupportsGetItem):
         self.model_path = model_path
         self._custom_prompt = custom_prompt
         self.max_new_tokens = max_new_tokens
+        self.batch_size = batch_size
         self._preprocess = False  # Preprocessing happens in GetItem
         
         # Device setup
@@ -147,6 +150,11 @@ class NanoNetsOCR(Model, SupportsGetItem):
     def media_type(self):
         """The media type processed by this model."""
         return "image"
+    
+    @property
+    def supports_batching(self):
+        """Whether this model supports batch processing."""
+        return True
     
     @property
     def preprocess(self):
