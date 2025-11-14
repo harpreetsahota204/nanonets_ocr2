@@ -108,7 +108,7 @@ class NanoNetsOCR(Model, SupportsGetItem, TorchModelMixin):
         self.model_path = model_path
         self._custom_prompt = custom_prompt
         self.max_new_tokens = max_new_tokens
-        self.batch_size = batch_size
+        self._batch_size = batch_size
         self._preprocess = False  # Preprocessing happens in GetItem
         
         # Device setup
@@ -169,6 +169,23 @@ class NanoNetsOCR(Model, SupportsGetItem, TorchModelMixin):
     def preprocess(self, value):
         """Set preprocessing flag."""
         self._preprocess = value
+    
+    @property
+    def batch_size(self):
+        """Default batch size for inference."""
+        return self._batch_size
+    
+    @batch_size.setter
+    def batch_size(self, value):
+        """Set batch size for inference.
+        
+        Args:
+            value: Batch size (positive integer)
+        """
+        if value < 1:
+            raise ValueError(f"batch_size must be >= 1, got {value}")
+        self._batch_size = value
+        logger.info(f"Batch size set to {value}")
     
     @property
     def ragged_batches(self):
