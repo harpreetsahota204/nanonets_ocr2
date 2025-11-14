@@ -11,7 +11,7 @@ import torch
 
 import fiftyone as fo
 from fiftyone import Model
-from fiftyone.core.models import SupportsGetItem
+from fiftyone.core.models import SupportsGetItem, TorchModelMixin
 from fiftyone.utils.torch import GetItem
 
 from transformers import AutoTokenizer, AutoProcessor, AutoModelForImageTextToText
@@ -76,7 +76,7 @@ class NanoNetsOCRGetItem(GetItem):
         return image
 
 
-class NanoNetsOCR(SupportsGetItem, Model):
+class NanoNetsOCR(Model, SupportsGetItem, TorchModelMixin):
     """FiftyOne model for NanoNets-OCR vision-language tasks with batching support.
     
     Simple OCR model that extracts text from documents using vision-language processing.
@@ -152,9 +152,13 @@ class NanoNetsOCR(SupportsGetItem, Model):
         return "image"
     
     @property
-    def supports_batching(self):
-        """Whether this model supports batch processing."""
-        return True
+    def transforms(self):
+        """Preprocessing transforms applied to inputs.
+        
+        For SupportsGetItem models, preprocessing happens in GetItem,
+        so return None.
+        """
+        return None
     
     @property
     def preprocess(self):
@@ -167,19 +171,31 @@ class NanoNetsOCR(SupportsGetItem, Model):
         self._preprocess = value
     
     @property
+    def ragged_batches(self):
+        """Whether this model supports batches with varying sizes.
+        
+        MUST return False to enable batching, even though inputs have variable sizes!
+        Handle variable sizes via custom collate_fn instead.
+        """
+        return False  # CRITICAL: False enables batching!
+    
+    @property
     def has_collate_fn(self):
         """Whether this model provides a custom collate function."""
-        return False  # Use default collation
+        return True  # Need custom collation for variable-size images
     
     @property
     def collate_fn(self):
-        """Custom collate function for the DataLoader."""
-        return None  # Not used
-    
-    @property
-    def ragged_batches(self):
-        """Whether this model supports batches with varying sizes."""
-        return True  # PIL Images can have different dimensions
+        """Custom collate function for batching variable-size images.
+        
+        Returns identity function that passes batch through as list,
+        allowing processor to handle variable sizes via padding.
+        """
+        @staticmethod
+        def identity_collate(batch):
+            """Return batch as-is (list of PIL Images)."""
+            return batch
+        return identity_collate
     
     def get_item(self):
         """Return the GetItem transform for batching support."""
